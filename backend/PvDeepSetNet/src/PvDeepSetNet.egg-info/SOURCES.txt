@@ -1,0 +1,11 @@
+pyproject.toml
+src/DeepSets/__init__.py
+src/DeepSets/build_tensors.py
+src/DeepSets/model.py
+src/DeepSets/preprocess.py
+src/PvDeepSetNet.egg-info/PKG-INFO
+src/PvDeepSetNet.egg-info/SOURCES.txt
+src/PvDeepSetNet.egg-info/dependency_links.txt
+src/PvDeepSetNet.egg-info/requires.txt
+src/PvDeepSetNet.egg-info/top_level.txt
+tests/tests_utils.py

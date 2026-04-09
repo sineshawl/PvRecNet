@@ -1,0 +1,32 @@
+[build-system]
+# These are the tools used to actually create the package files
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "PvDeepSetNet"        # The name you'll use for 'pip install'
+version = "0.1.0"           # Increment this (0.1.1, 0.2.0) as you update
+description = "Core utilities shared across my internal projects"
+readme = "README.md"        # Links your README file
+requires-python = ">=3.8"   # Minimum Python version required
+authors = [
+  { name="Sineshaw L.", email="sinelegese306@gmail.com" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+# LIST YOUR DEPENDENCIES HERE
+# These are installed automatically when you install your package
+dependencies = [
+    "requests >= 2.28.0",
+    "pandas >= 2.0.0",
+]
+
+[tool.setuptools.packages.find]
+# This tells Python to look in the 'src' folder for your code
+where = ["src"]
+
+[project.urls]
+"Homepage" = "https://github.com/sineshawl/PvRecNet"
