@@ -3,7 +3,7 @@ import pandas as pd
 import json
 from collections import defaultdict
 
-def build_deepsets_tensors(df, M_max = 11, A_max = 5, purpose='prediction'):
+def build_deepsets_tensors(df, M_max = 11, A_max = 5, purpose='prediction', prior='not_given'):
     """
     df =  dataframe
     M_max = the maximum number of unique marker within the dataset (default 11 <- used during training)
@@ -15,18 +15,13 @@ def build_deepsets_tensors(df, M_max = 11, A_max = 5, purpose='prediction'):
     required_cols = {'prior_C', 'prior_L', 'prior_I'}
     if not required_cols.issubset(df.columns):
         df['prior_C']=df['prior_L']=df['prior_I']=1/3
+        
 
         
-    # reading allele dictionary
+
     with open('allele_dict.json', 'r') as file:
         allele_to_id = json.load(file)
     
-    # build tensor for target variable only if the purpose == evaluation
-    y_given = False
-    if purpose == 'evaluation':
-        y_given=True
-
-
 
     # ----------------------------------------------------
     # 1. Encode categorical variables once
@@ -46,7 +41,6 @@ def build_deepsets_tensors(df, M_max = 11, A_max = 5, purpose='prediction'):
 
     priors = torch.zeros((N, 3))
     MOI    = torch.zeros((N, 2))
-    y      = torch.zeros((N, 3))
 
     # ----------------------------------------------------
     # 3. Main loop (optimized)
@@ -58,8 +52,6 @@ def build_deepsets_tensors(df, M_max = 11, A_max = 5, purpose='prediction'):
         MOI2 = df_pair.loc[df_pair.episode == 2, 'MOI'].iloc[0] 
         
         MOI[i] = torch.tensor([MOI1, MOI2])
-        if y_given:
-            y[i] = torch.tensor(df_pair[["post_C", "post_L", "post_I"]].iloc[0].values)
 
         # ---- pre-group alleles by (marker, episode)
         allele_dict = defaultdict(list)
@@ -79,12 +71,11 @@ def build_deepsets_tensors(df, M_max = 11, A_max = 5, purpose='prediction'):
                     X_alleles[i, m_idx, e_idx, a_idx, 0] = allele_to_id[allele]
                     X_alleles[i, m_idx, e_idx, a_idx, 1] = freq
                     allele_mask[i, m_idx, e_idx, a_idx] = True
-    final_tensors = {
-            "X_alleles": X_alleles, "allele_mask": allele_mask,
-            "marker_mask": marker_mask, "priors": priors,
-            "MOI": MOI
-            }
-    if y_given:
-        final_tensors['y'] = y
 
-    return final_tensors
+    return {
+        "X_alleles": X_alleles,
+        "allele_mask": allele_mask,
+        "marker_mask": marker_mask,
+        "priors": priors,
+        "MOI": MOI,
+    }
