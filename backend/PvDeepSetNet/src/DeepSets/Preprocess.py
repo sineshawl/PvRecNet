@@ -132,7 +132,9 @@ class DataPreprocessor:
 
         df.rename(columns={'episode':'true_episode', 'episode_order':'episode'}, inplace=True)
 
-        return df
+        meta_info = df[['sample_id_paired', 'patient_id', 'true_episode']].drop_duplicates().reset_index(drop=True)
+
+        return df, meta_info
 
     @staticmethod
     def build_deepsets_tensors(df, M_max=11, A_max=5, mode='prediction'):
@@ -177,12 +179,14 @@ class DataPreprocessor:
         priors = torch.zeros((N, 3))
         MOI    = torch.zeros((N, 2))
         y      = torch.zeros((N, 3))
+        pair_name = [None]*N
 
         # ----------------------------------------------------
         # 3. Main loop (optimized)
         # ----------------------------------------------------
         for i, (_, df_pair) in enumerate(grouped):
             # ---- pair-level values (constant)
+            pair_name[i] = _
             priors[i] = torch.tensor(df_pair[["prior_C", "prior_L", "prior_I"]].iloc[0].values)
             MOI1 = df_pair.loc[df_pair.episode == 1, 'MOI'].iloc[0] 
             MOI2 = df_pair.loc[df_pair.episode == 2, 'MOI'].iloc[0] 
@@ -210,7 +214,7 @@ class DataPreprocessor:
                         X_alleles[i, m_idx, e_idx, a_idx, 1] = freq
                         allele_mask[i, m_idx, e_idx, a_idx] = True
         final_tensors = {
-                "X_alleles": X_alleles, "allele_mask": allele_mask,
+                "pair_id": pair_name, "X_alleles": X_alleles, "allele_mask": allele_mask,
                 "marker_mask": marker_mask, "priors": priors,
                 "MOI": MOI
                 }
