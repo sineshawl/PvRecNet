@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 import torch
@@ -152,7 +153,11 @@ class DataPreprocessor:
 
             
         # reading allele dictionary
-        with open('allele_dict.json', 'r') as file:
+        # Get the directory where Preprocess.py is located
+        base_path = os.path.dirname(__file__)
+        file_path = os.path.join(base_path, 'allele_dict.json')
+
+        with open(file_path, 'r') as file:
             allele_to_id = json.load(file)
         
         # build tensor for target variable only if the mode == evaluation

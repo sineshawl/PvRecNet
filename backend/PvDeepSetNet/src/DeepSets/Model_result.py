@@ -1,16 +1,16 @@
-import torch
+import os
 import json
+import torch
 import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import plotly.express as px
+from sklearn.metrics import r2_score
 from DeepSets import PvDeepSets
 from sklearn.metrics import classification_report, confusion_matrix
 
 
-
-
-import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.metrics import r2_score
 
 
 class PvDeepSet_model:
@@ -21,7 +21,11 @@ class PvDeepSet_model:
         #-------------------------------------#
 
         # reading allele dictionary
-        with open('allele_dict.json', 'r') as file:
+        # Get the directory where Model_result.py is located
+        base_path = os.path.dirname(__file__)
+        file_path = os.path.join(base_path, 'allele_dict.json')
+
+        with open(file_path, 'r') as file:
             allele_to_id = json.load(file)
 
         # Define the device
@@ -33,7 +37,10 @@ class PvDeepSet_model:
         model = PvDeepSets(n_alleles=n_alleles)
         print(n_alleles)
         # Load the weights (state_dict)
-        model.load_state_dict(torch.load("../src/DeepSets/pv_deepsets_weights20260402.pth", map_location=device))
+        # Get the directory where Preprocess.py is located
+        base_path = os.path.dirname(__file__)
+        file_path = os.path.join(base_path, 'pv_deepsets_weights20260402.pth')
+        model.load_state_dict(torch.load(file_path, weights_only=True, map_location=device))
 
         return device, model
     
@@ -109,19 +116,147 @@ class PvDeepSet_model:
         # Apply the logic to create the new column
         results_df['predicted_class'] = results_df.apply(classify_row, axis=1)
 
-        def get_basic_summary(result_df):
-            return f"\n--- Prediction Summary --- {result_df['predicted_class'].value_counts()} --------------------------\n"
+        dist_df = results_df['predicted_class'].value_counts().reset_index()
+        dist_df.columns = ['class', 'count']
+    
+
+        # fig = px.bar(
+        #     dist_df, x='class', y='count', 
+        #     color='class', title="Classification Distribution",
+        #     template="plotly_white"
+        # )
+        def plot_donut_count(df):
+            # 1. Prepare the data
+            # Assuming 'df' is your processed dataframe from the previous step
+            counts_df = df['predicted_class'].value_counts().reset_index()
+            counts_df.columns = ['Class', 'Count']
+            map_rec = {'C':'C (Recrudescence)', 'L': 'L (Relapse)', 'I':'I (Reinfection)'}
+
+            counts_df['Class'] = counts_df['Class'].map(map_rec)
+
+            # 2. Create the Donut Chart
+            fig = px.pie(
+                counts_df, 
+                values='Count', 
+                names='Class', 
+                hole=0.5, # This creates the "donut" effect
+                color='Class',
+                # Keeping colors consistent: Orange (C), Yellow (L), Teal (I)
+                color_discrete_map={
+                    'C (Recrudescence)': '#ff4d00', 
+                    'L (Relapse)': '#e6b400', 
+                    'I (Reinfection)': '#1fb3c4'
+                },
+                template="plotly_white"
+            )
+
+            # 3. Refine the layout to match your previous style
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=60, b=20),
+                height=500,
+                paper_bgcolor='white',
+                # Horizontal legend at the top
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.05,
+                    xanchor="center",
+                    x=0.5,
+                    title=None
+                )
+            )
+
+            # 4. Enhance the traces (labels and percentages)
+            fig.update_traces(
+                textposition='inside', 
+                textinfo='percent+label', # Shows the Class name and %
+                marker=dict(line=dict(color='#FFFFFF', width=2)) # Adds a small white gap between segments
+            )
+
+            return fig
+
+
+        def plot_probability_dist(df):
+
+            df = df.copy()
+            df = df[['pair_id', 'prob_C', 'prob_L','prob_I','predicted_class']].drop_duplicates().reset_index(drop=True)
+
+            # Grouped and sorted blocks
+            df_C = df[df.predicted_class == 'C'].sort_values('prob_C', ascending=False).reset_index(drop=True)
+            df_L = df[df.predicted_class == 'L'].sort_values('prob_L', ascending=False).reset_index(drop=True)
+            df_I = df[df.predicted_class == 'I'].sort_values('prob_I', ascending=False).reset_index(drop=True)
+
+            df_sorted = pd.concat([df_C, df_L, df_I], ignore_index=True)
+
+            df_long = df_sorted.melt(
+                id_vars=['pair_id'], 
+                value_vars=['prob_C', 'prob_L', 'prob_I'],
+                var_name='Probability_Type', 
+                value_name='Probability'
+            )
+
+            fig = px.bar(
+                df_long, 
+                x="pair_id", 
+                y="Probability", 
+                color="Probability_Type",
+                color_discrete_sequence=['#ff4d00', '#e6b400', '#1fb3c4'],
+                category_orders={"pair_id": df_sorted['pair_id'].tolist()},
+                template="plotly_white" # Sets white background and clean gridlines
+            )
+
+            fig.update_layout(
+                title=None,
+                margin=dict(l=50, r=20, t=60, b=50), # Adjusted for axis labels
+                height=500,
+                paper_bgcolor='white',
+                plot_bgcolor='white',
+                
+                # Horizontal legend at the top
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="center",
+                    x=0.5,
+                    title=None
+                ),
+                
+                xaxis=dict(
+                    title="Samples",      # Restored the label
+                    showticklabels=False, # Keeps specific IDs hidden for cleanliness
+                    ticks="",
+                    linecolor='black',    # Adds a crisp base line
+                    showgrid=False
+                ),
+                
+                yaxis=dict(
+                    title="Probability",
+                    range=[0, 1],
+                    tickformat=".1f",
+                    linecolor='black',
+                    gridcolor='lightgrey' # Subtle grid for probability reference
+                ),
+                
+                bargap=0
+            )
+
+            return fig
+        
+        donut_plot = plot_donut_count(results_df)
+        probability_dist_plot = plot_probability_dist(results_df)       
         
         results_df = results_df.merge(meta_df, left_on='pair_id', right_on='sample_id_paired', how='inner')
 
         columns = ['pair_id', 'patient_id', 'true_episode', 'prob_C', 'prob_L', 'prob_I', 'predicted_class']
         results = {
                 'results_table':results_df[columns],
-                'basic_summary': get_basic_summary(results_df)
+                'donut_plot': donut_plot,
+                'distribution_plot': probability_dist_plot
                 }
 
         return results
-        
+    @staticmethod
     def run_evaluation(meta_df,
                         pair_id,
                         data_loader, 
