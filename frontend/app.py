@@ -11,7 +11,7 @@ from services.api import PvRecNetAPI
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.FLATLY],
-    title="PvRecNet Malaria System",
+    title="PvRecNet",
     suppress_callback_exceptions=True 
 )
 
@@ -240,15 +240,42 @@ def handle_upload(contents, filename):
     State('dataset-id-store', 'data'),
     prevent_initial_call=True
 )
+
 def run_predict(n_clicks, dataset_id):
     try:
         res = PvRecNetAPI.run_prediction(dataset_id)
         fig1 = json.loads(res['plot_json1'])
         fig2 = json.loads(res['plot_json2'])
 
-        table = dash_table.DataTable(data=res['results_table'], columns=[{"name": i, "id": i} for i in pd.DataFrame(res['results_table']).columns], export_format='csv', page_size=10, style_table={'height': '400px', 'overflowY': 'auto'})
-        return html.Div([dbc.Row([dbc.Col([dcc.Graph(figure=fig1), dcc.Graph(figure=fig2)], md=5), dbc.Col(table, md=7)])])
-    except Exception as e: return dbc.Alert(f"Error: {str(e)}", color="danger")
+        # 1. Convert the results list to a DataFrame
+        df = pd.DataFrame(res['results_table'])
+
+        # 2. Identify the probability columns (adjust names based on your actual API output)
+        prob_cols = ['C_marg', 'L_marg', 'I_marg'] # or 'post_C', etc.
+        
+        # 3. Apply string formatting for consistent visual alignment
+        for col in prob_cols:
+            if col in df.columns:
+                df[col] = df[col].map(lambda x: f"{x:.4f}" if pd.notnull(x) else x)
+
+        # 4. Create the DataTable using the formatted data
+        table = dash_table.DataTable(
+            data=df.to_dict('records'), 
+            columns=[{"name": i, "id": i} for i in df.columns], 
+            export_format='csv', 
+            page_size=10, 
+            style_table={'height': '400px', 'overflowY': 'auto'},
+            style_cell={'textAlign': 'left'} # Optional: improves readability
+        )
+        
+        return html.Div([
+            dbc.Row([
+                dbc.Col([dcc.Graph(figure=fig1), dcc.Graph(figure=fig2)], md=5), 
+                dbc.Col(table, md=7)
+            ])
+        ])
+    except Exception as e: 
+        return dbc.Alert(f"Error: {str(e)}", color="danger")
 
 # @app.callback(
 #     Output('analytics-output', 'children'),
