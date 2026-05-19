@@ -133,7 +133,7 @@ class DataPreprocessor:
 
         df.rename(columns={'episode':'true_episode', 'episode_order':'episode'}, inplace=True)
 
-        meta_info = df[['sample_id_paired', 'patient_id', 'true_episode']].drop_duplicates().reset_index(drop=True)
+        meta_info = df[['sample_id_paired', 'patient_id', 'true_episode', 'prior_C', 'prior_L', 'prior_I']].drop_duplicates().reset_index(drop=True)
 
         return df, meta_info
 
@@ -239,7 +239,6 @@ class DataPreprocessor:
                 deepset_tensor["X_alleles"],
                 deepset_tensor["allele_mask"],
                 deepset_tensor["marker_mask"],
-                deepset_tensor["priors"],
                 deepset_tensor["MOI"]
             )
         elif mode == 'evaluation':
@@ -247,7 +246,6 @@ class DataPreprocessor:
                 deepset_tensor["X_alleles"],
                 deepset_tensor["allele_mask"],
                 deepset_tensor["marker_mask"],
-                deepset_tensor["priors"],
                 deepset_tensor["MOI"],
                 deepset_tensor["y"]
             )

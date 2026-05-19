@@ -39,11 +39,111 @@ class PvDeepSet_model:
         # Load the weights (state_dict)
         # Get the directory where Preprocess.py is located
         base_path = os.path.dirname(__file__)
-        file_path = os.path.join(base_path, 'pv_deepsets_weights20260402.pth')
+        file_path = os.path.join(base_path, 'pv_deepsets_weights20260425_154256.pth')
         model.load_state_dict(torch.load(file_path, weights_only=True, map_location=device))
 
         return device, model
+    @staticmethod
+    def result_post_processing(results_df, calc_NU_post = True, approx_joint = True):
+        """
+        result_df: PvDeepSet predicted results
+        calc_NU_post: calculate non uniform posterior (refine the posterior if the priors were not default)
+        approx_joint: approximate marginal probabilities from perwise results
+        """
+        if calc_NU_post:
+            
+            # 1. Align column names for math operations
+            # We create a temporary copy to ensure we multiply the right classes
+            df_priors = results_df[['prior_C', 'prior_L', 'prior_I']].rename(columns={'prior_C': 'C', 'prior_L': 'L', 'prior_I': 'I'})
+   
+            df_post_uni = results_df[['prob_C', 'prob_L', 'prob_I']].rename(columns={'prob_C': 'C', 'prob_L': 'L', 'prob_I': 'I'})
+
+            # 2. Numerator: Multiply P_uniform(s|y) * P(s)
+            # Pandas handles row-matching automatically by index
+            numerator = df_post_uni * df_priors
+
+            # 3. Denominator: Sum across the columns for each row (Normalization)
+            denominator = numerator.sum(axis=1)
+
+            # 4. Final Recovery: Divide numerator by denominator
+            # axis=0 ensures the division happens row by row
+            df_post_non_uniform = numerator.divide(denominator, axis=0)
+
+            df_post_non_uniform['C'] = df_post_non_uniform['C'].round(4)
+            df_post_non_uniform['L'] = df_post_non_uniform['L'].round(4)
+            df_post_non_uniform['I'] = df_post_non_uniform['I'].round(4)
     
+            results_df['prob_C'] = df_post_non_uniform['C'].values
+            results_df['prob_L'] = df_post_non_uniform['L'].values
+            results_df['prob_I'] = df_post_non_uniform['I'].values
+            return df_post_non_uniform
+
+        if approx_joint:
+            """
+            Python implementation of the Pv3Rs approx-joint marginalization logic.
+            Assumes df contains: patient_id, episode_i, episode_j, post_C, post_L, post_I
+            """
+
+            def assign_source_episodes(df):
+                df = df.sort_values(['patient_id', 'true_episode']).copy()
+                
+                # We create a counter that resets for every new 'true_episode'
+                # This identifies if the row is comparing against the 1st, 2nd, or 3rd previous episode
+                df['pair_source'] = df.groupby(['patient_id', 'true_episode']).cumcount() + 1    
+                return df.sort_values('pair_id')
+
+            df = assign_source_episodes(results_df)
+            
+            results = []
+
+            
+            for pid, group in df.groupby('patient_id'):
+                # Get unique episodes in chronological order
+                # Based on your data, episodes are 1, 2, 4, 5, 6...
+                episodes = sorted(group['true_episode'].unique())
+                n_epi = len(episodes)
+                
+                # We start calculating from the first recurrence (index 1)
+                for idx in range(1, n_epi):
+                    curr_epi = episodes[idx]
+                    prev_epi = episodes[idx-1]
+                    
+                    # --- CALCULATE C (Recrudescence) ---
+                    # Rule: Only look at the immediate predecessor
+                    c_row = group[(group['true_episode'] == curr_epi) & (group['pair_source'] == prev_epi)]
+                    # If your data doesn't have 'pair_source', we look for the specific pair 
+                    # where j = curr_epi and i = prev_epi
+                    C_prob = c_row['prob_C'].iloc[0] if not c_row.empty else 0.0
+
+                    # --- CALCULATE L (Relapse) ---
+                    # Rule: Max( L / (1-C) ) across all previous episodes, then scale by (1-C_total)
+                    
+                    # Get all pairs where 'episode' is our current episode
+                    all_prev_pairs = group[group['true_episode'] == curr_epi]
+                    
+                    # Calculate the 'relapse share': L / (1 - C)
+                    # Use small epsilon to avoid division by zero
+                    shares = all_prev_pairs['prob_L'] / (1 - all_prev_pairs['prob_C'] + 1e-9)
+                    max_share = shares.max()
+                    
+                    L_prob = max_share * (1 - C_prob)
+                    
+                    # --- CALCULATE I (Reinfection) ---
+                    # Rule: The remainder
+                    I_prob = 1 - (C_prob + L_prob)
+                    
+                    results.append({
+                        'patient_id': pid,
+                        'episode': curr_epi,
+                        'C_marg': C_prob,
+                        'L_marg': L_prob,
+                        'I_marg': I_prob
+                    })
+            results_df = pd.DataFrame(results)
+        return results_df
+
+
+
     @staticmethod
     def get_model_results(model, dataloader, device, threshold=0.5, mode='prediction'):
         model.eval()
@@ -54,15 +154,15 @@ class PvDeepSet_model:
             for batch in dataloader:
                 # Flexible unpacking: if evaluating, 'batch' has one extra item (y)
                 if mode  == 'evaluation':
-                    X_alleles, allele_mask, marker_mask, priors, MOI, y = batch
+                    X_alleles, allele_mask, marker_mask, MOI, y = batch
                     true_labels = torch.argmax(y, dim=1)
                     all_actual.append(y.cpu().numpy())
                 elif mode == 'prediction':
-                    X_alleles, allele_mask, marker_mask, priors, MOI = batch
+                    X_alleles, allele_mask, marker_mask, MOI = batch
 
                 # Model Forward Pass
                 y_pred = model(X_alleles.to(device), allele_mask.to(device), 
-                            marker_mask.to(device), priors.to(device), MOI.to(device))
+                            marker_mask.to(device), MOI.to(device))
                 
                 probs = y_pred # Assuming Softmax is handled inside or by thresholding
 
@@ -77,79 +177,79 @@ class PvDeepSet_model:
         
         return pred_stack
 
-    @staticmethod
-    def calculate_approx_marginals(df):
-        """
-        Python implementation of the Pv3Rs approx-joint marginalization logic.
-        Assumes df contains: patient_id, episode_i, episode_j, post_C, post_L, post_I
-        """
-        # 1. Identify the unique episodes for this patient (sorted)
-        # We assume 'episode' in your sample refers to the current episode (j)
-        # and we need to identify the source episode (i). 
-        # For this example, let's derive i and j from your structure.
+    # @staticmethod
+    # def calculate_approx_marginals(df):
+    #     """
+    #     Python implementation of the Pv3Rs approx-joint marginalization logic.
+    #     Assumes df contains: patient_id, episode_i, episode_j, post_C, post_L, post_I
+    #     """
+    #     # 1. Identify the unique episodes for this patient (sorted)
+    #     # We assume 'episode' in your sample refers to the current episode (j)
+    #     # and we need to identify the source episode (i). 
+    #     # For this example, let's derive i and j from your structure.
 
 
-        def assign_source_episodes(df):
-            df = df.sort_values(['patient_id', 'true_episode']).copy()
+    #     def assign_source_episodes(df):
+    #         df = df.sort_values(['patient_id', 'true_episode']).copy()
             
-            # We create a counter that resets for every new 'true_episode'
-            # This identifies if the row is comparing against the 1st, 2nd, or 3rd previous episode
-            df['pair_source'] = df.groupby(['patient_id', 'true_episode']).cumcount() + 1    
-            return df.sort_values('pair_id')
+    #         # We create a counter that resets for every new 'true_episode'
+    #         # This identifies if the row is comparing against the 1st, 2nd, or 3rd previous episode
+    #         df['pair_source'] = df.groupby(['patient_id', 'true_episode']).cumcount() + 1    
+    #         return df.sort_values('pair_id')
 
-        df = assign_source_episodes(df)
+    #     df = assign_source_episodes(df)
         
-        results = []
+    #     results = []
 
         
-        for pid, group in df.groupby('patient_id'):
-            # Get unique episodes in chronological order
-            # Based on your data, episodes are 1, 2, 4, 5, 6...
-            episodes = sorted(group['true_episode'].unique())
-            n_epi = len(episodes)
+    #     for pid, group in df.groupby('patient_id'):
+    #         # Get unique episodes in chronological order
+    #         # Based on your data, episodes are 1, 2, 4, 5, 6...
+    #         episodes = sorted(group['true_episode'].unique())
+    #         n_epi = len(episodes)
             
-            # We start calculating from the first recurrence (index 1)
-            for idx in range(1, n_epi):
-                curr_epi = episodes[idx]
-                prev_epi = episodes[idx-1]
+    #         # We start calculating from the first recurrence (index 1)
+    #         for idx in range(1, n_epi):
+    #             curr_epi = episodes[idx]
+    #             prev_epi = episodes[idx-1]
                 
-                # --- CALCULATE C (Recrudescence) ---
-                # Rule: Only look at the immediate predecessor
-                c_row = group[(group['true_episode'] == curr_epi) & (group['pair_source'] == prev_epi)]
-                # If your data doesn't have 'pair_source', we look for the specific pair 
-                # where j = curr_epi and i = prev_epi
-                C_prob = c_row['prob_C'].iloc[0] if not c_row.empty else 0.0
+    #             # --- CALCULATE C (Recrudescence) ---
+    #             # Rule: Only look at the immediate predecessor
+    #             c_row = group[(group['true_episode'] == curr_epi) & (group['pair_source'] == prev_epi)]
+    #             # If your data doesn't have 'pair_source', we look for the specific pair 
+    #             # where j = curr_epi and i = prev_epi
+    #             C_prob = c_row['prob_C'].iloc[0] if not c_row.empty else 0.0
 
-                # --- CALCULATE L (Relapse) ---
-                # Rule: Max( L / (1-C) ) across all previous episodes, then scale by (1-C_total)
+    #             # --- CALCULATE L (Relapse) ---
+    #             # Rule: Max( L / (1-C) ) across all previous episodes, then scale by (1-C_total)
                 
-                # Get all pairs where 'episode' is our current episode
-                all_prev_pairs = group[group['true_episode'] == curr_epi]
+    #             # Get all pairs where 'episode' is our current episode
+    #             all_prev_pairs = group[group['true_episode'] == curr_epi]
                 
-                # Calculate the 'relapse share': L / (1 - C)
-                # Use small epsilon to avoid division by zero
-                shares = all_prev_pairs['prob_L'] / (1 - all_prev_pairs['prob_C'] + 1e-9)
-                max_share = shares.max()
+    #             # Calculate the 'relapse share': L / (1 - C)
+    #             # Use small epsilon to avoid division by zero
+    #             shares = all_prev_pairs['prob_L'] / (1 - all_prev_pairs['prob_C'] + 1e-9)
+    #             max_share = shares.max()
                 
-                L_prob = max_share * (1 - C_prob)
+    #             L_prob = max_share * (1 - C_prob)
                 
-                # --- CALCULATE I (Reinfection) ---
-                # Rule: The remainder
-                I_prob = 1 - (C_prob + L_prob)
+    #             # --- CALCULATE I (Reinfection) ---
+    #             # Rule: The remainder
+    #             I_prob = 1 - (C_prob + L_prob)
                 
-                results.append({
-                    'patient_id': pid,
-                    'episode': curr_epi,
-                    'C_marg': C_prob,
-                    'L_marg': L_prob,
-                    'I_marg': I_prob
-                })
-        marg_result = pd.DataFrame(results)
-
-
+    #             results.append({
+    #                 'patient_id': pid,
+    #                 'episode': curr_epi,
+    #                 'C_marg': C_prob,
+    #                 'L_marg': L_prob,
+    #                 'I_marg': I_prob
+    #             })
+    #     marg_result = pd.DataFrame(results)
 
 
-        return marg_result
+
+
+    #     return marg_result
 
     @staticmethod
     def run_prediction(meta_df,
@@ -174,6 +274,21 @@ class PvDeepSet_model:
         # Insert the pair_id as the first column
         results_df.insert(0, 'pair_id', pair_id)
 
+        results_df = results_df.merge(meta_df, left_on='pair_id', right_on='sample_id_paired', how='inner')
+        unique_result = results_df[['pair_id', 'prior_C', 'prior_L', 'prior_I', 'prob_C', 'prob_L', 'prob_I']].drop_duplicates(ignore_index=True)
+        results_df = PvDeepSet_model.result_post_processing(unique_result, calc_NU_post=True, approx_joint=False)
+        # results_df = PvDeepSet_model.result_post_processing(unique_result, calc_NU_post=False, approx_joint=True)
+
+        return results_df
+
+        # get marginal probabilities
+        marginal_df = PvDeepSet_model.calculate_approx_marginals(results_df[['pair_id', 'patient_id', 'true_episode', 'prob_C', 'prob_L', 'prob_I']])
+        marginal_df['predicted_class'] = marginal_df.apply(classify_row, axis=1, cols=['C_marg', 'L_marg', 'I_marg'])
+        donut_plot = plot_donut_count(marginal_df)
+        marginal_df['patient_id_epi'] = marginal_df['patient_id'] + "_" + marginal_df['episode'].astype(int).astype('str')
+        probability_dist_plot = plot_probability_dist(marginal_df, cols=['patient_id_epi', 'C_marg', 'L_marg','I_marg','predicted_class'])
+
+
         # 4. Hardclass Classification with Threshold Logic
         def classify_row(row, cols=['prob_C', 'prob_L', 'prob_I']):
             probs = [row[cols[0]], row[cols[1]], row[cols[2]]]
@@ -189,6 +304,8 @@ class PvDeepSet_model:
 
         # Apply the logic to create the new column
         results_df['predicted_class'] = results_df.apply(classify_row, axis=1)
+
+
 
         dist_df = results_df['predicted_class'].value_counts().reset_index()
         dist_df.columns = ['class', 'count']
@@ -268,7 +385,7 @@ class PvDeepSet_model:
                 var_name='Probability_Type', 
                 value_name='Probability'
             )
-
+            
             fig = px.bar(
                 df_long, 
                 x=cols[0], 
@@ -320,14 +437,14 @@ class PvDeepSet_model:
         donut_plot = plot_donut_count(results_df)
         probability_dist_plot = plot_probability_dist(results_df)       
         
-        results_df = results_df.merge(meta_df, left_on='pair_id', right_on='sample_id_paired', how='inner')
+        # results_df = results_df.merge(meta_df, left_on='pair_id', right_on='sample_id_paired', how='inner')
 
-        # get marginal probabilities
-        marginal_df = PvDeepSet_model.calculate_approx_marginals(results_df[['pair_id', 'patient_id', 'true_episode', 'prob_C', 'prob_L', 'prob_I']])
-        marginal_df['predicted_class'] = marginal_df.apply(classify_row, axis=1, cols=['C_marg', 'L_marg', 'I_marg'])
-        donut_plot = plot_donut_count(marginal_df)
-        marginal_df['patient_id_epi'] = marginal_df['patient_id'] + "_" + marginal_df['episode'].astype(int).astype('str')
-        probability_dist_plot = plot_probability_dist(marginal_df, cols=['patient_id_epi', 'C_marg', 'L_marg','I_marg','predicted_class'])
+        # # get marginal probabilities
+        # marginal_df = PvDeepSet_model.calculate_approx_marginals(results_df[['pair_id', 'patient_id', 'true_episode', 'prob_C', 'prob_L', 'prob_I']])
+        # marginal_df['predicted_class'] = marginal_df.apply(classify_row, axis=1, cols=['C_marg', 'L_marg', 'I_marg'])
+        # donut_plot = plot_donut_count(marginal_df)
+        # marginal_df['patient_id_epi'] = marginal_df['patient_id'] + "_" + marginal_df['episode'].astype(int).astype('str')
+        # probability_dist_plot = plot_probability_dist(marginal_df, cols=['patient_id_epi', 'C_marg', 'L_marg','I_marg','predicted_class'])
 
         columns = ['pair_id', 'patient_id', 'true_episode', 'prob_C', 'prob_L', 'prob_I', 'predicted_class']
         results = {
