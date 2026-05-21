@@ -133,6 +133,12 @@ class DataPreprocessor:
 
         df.rename(columns={'episode':'true_episode', 'episode_order':'episode'}, inplace=True)
 
+        # checking the existance of prior columns, otherwise the default values will be assigned
+        required_cols = {'prior_C', 'prior_L', 'prior_I'}
+        if not required_cols.issubset(df.columns):
+            df['prior_C']=df['prior_L']=df['prior_I']=1/3
+
+
         meta_info = df[['sample_id_paired', 'patient_id', 'true_episode', 'prior_C', 'prior_L', 'prior_I']].drop_duplicates().reset_index(drop=True)
 
         return df, meta_info
@@ -146,10 +152,6 @@ class DataPreprocessor:
         allele_to_id = alleles with their corresponding ids
         Optimized Deep Sets preprocessing for Pv3Rs surrogate
         """
-        # checking the existance of prior columns, otherwise the default values will be assigned
-        required_cols = {'prior_C', 'prior_L', 'prior_I'}
-        if not required_cols.issubset(df.columns):
-            df['prior_C']=df['prior_L']=df['prior_I']=1/3
 
             
         # reading allele dictionary

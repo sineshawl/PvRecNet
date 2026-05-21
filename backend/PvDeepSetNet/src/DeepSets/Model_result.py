@@ -7,13 +7,14 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import plotly.express as px
 from sklearn.metrics import r2_score
-from DeepSets import PvDeepSets
+from DeepSets import PvDeepSets, Post_Model_Computation, PvRecNet_Plots
 from sklearn.metrics import classification_report, confusion_matrix
+import re
 
 
 
 
-class PvDeepSet_model:
+class PvDeepSet_Model:
     @staticmethod 
     def load_model_state():
         #-------------------------------------#
@@ -43,106 +44,7 @@ class PvDeepSet_model:
         model.load_state_dict(torch.load(file_path, weights_only=True, map_location=device))
 
         return device, model
-    @staticmethod
-    def result_post_processing(results_df, calc_NU_post = True, approx_joint = True):
-        """
-        result_df: PvDeepSet predicted results
-        calc_NU_post: calculate non uniform posterior (refine the posterior if the priors were not default)
-        approx_joint: approximate marginal probabilities from perwise results
-        """
-        if calc_NU_post:
-            
-            # 1. Align column names for math operations
-            # We create a temporary copy to ensure we multiply the right classes
-            df_priors = results_df[['prior_C', 'prior_L', 'prior_I']].rename(columns={'prior_C': 'C', 'prior_L': 'L', 'prior_I': 'I'})
    
-            df_post_uni = results_df[['prob_C', 'prob_L', 'prob_I']].rename(columns={'prob_C': 'C', 'prob_L': 'L', 'prob_I': 'I'})
-
-            # 2. Numerator: Multiply P_uniform(s|y) * P(s)
-            # Pandas handles row-matching automatically by index
-            numerator = df_post_uni * df_priors
-
-            # 3. Denominator: Sum across the columns for each row (Normalization)
-            denominator = numerator.sum(axis=1)
-
-            # 4. Final Recovery: Divide numerator by denominator
-            # axis=0 ensures the division happens row by row
-            df_post_non_uniform = numerator.divide(denominator, axis=0)
-
-            df_post_non_uniform['C'] = df_post_non_uniform['C'].round(4)
-            df_post_non_uniform['L'] = df_post_non_uniform['L'].round(4)
-            df_post_non_uniform['I'] = df_post_non_uniform['I'].round(4)
-    
-            results_df['prob_C'] = df_post_non_uniform['C'].values
-            results_df['prob_L'] = df_post_non_uniform['L'].values
-            results_df['prob_I'] = df_post_non_uniform['I'].values
-            return df_post_non_uniform
-
-        if approx_joint:
-            """
-            Python implementation of the Pv3Rs approx-joint marginalization logic.
-            Assumes df contains: patient_id, episode_i, episode_j, post_C, post_L, post_I
-            """
-
-            def assign_source_episodes(df):
-                df = df.sort_values(['patient_id', 'true_episode']).copy()
-                
-                # We create a counter that resets for every new 'true_episode'
-                # This identifies if the row is comparing against the 1st, 2nd, or 3rd previous episode
-                df['pair_source'] = df.groupby(['patient_id', 'true_episode']).cumcount() + 1    
-                return df.sort_values('pair_id')
-
-            df = assign_source_episodes(results_df)
-            
-            results = []
-
-            
-            for pid, group in df.groupby('patient_id'):
-                # Get unique episodes in chronological order
-                # Based on your data, episodes are 1, 2, 4, 5, 6...
-                episodes = sorted(group['true_episode'].unique())
-                n_epi = len(episodes)
-                
-                # We start calculating from the first recurrence (index 1)
-                for idx in range(1, n_epi):
-                    curr_epi = episodes[idx]
-                    prev_epi = episodes[idx-1]
-                    
-                    # --- CALCULATE C (Recrudescence) ---
-                    # Rule: Only look at the immediate predecessor
-                    c_row = group[(group['true_episode'] == curr_epi) & (group['pair_source'] == prev_epi)]
-                    # If your data doesn't have 'pair_source', we look for the specific pair 
-                    # where j = curr_epi and i = prev_epi
-                    C_prob = c_row['prob_C'].iloc[0] if not c_row.empty else 0.0
-
-                    # --- CALCULATE L (Relapse) ---
-                    # Rule: Max( L / (1-C) ) across all previous episodes, then scale by (1-C_total)
-                    
-                    # Get all pairs where 'episode' is our current episode
-                    all_prev_pairs = group[group['true_episode'] == curr_epi]
-                    
-                    # Calculate the 'relapse share': L / (1 - C)
-                    # Use small epsilon to avoid division by zero
-                    shares = all_prev_pairs['prob_L'] / (1 - all_prev_pairs['prob_C'] + 1e-9)
-                    max_share = shares.max()
-                    
-                    L_prob = max_share * (1 - C_prob)
-                    
-                    # --- CALCULATE I (Reinfection) ---
-                    # Rule: The remainder
-                    I_prob = 1 - (C_prob + L_prob)
-                    
-                    results.append({
-                        'patient_id': pid,
-                        'episode': curr_epi,
-                        'C_marg': C_prob,
-                        'L_marg': L_prob,
-                        'I_marg': I_prob
-                    })
-            results_df = pd.DataFrame(results)
-        return results_df
-
-
 
     @staticmethod
     def get_model_results(model, dataloader, device, threshold=0.5, mode='prediction'):
@@ -177,80 +79,6 @@ class PvDeepSet_model:
         
         return pred_stack
 
-    # @staticmethod
-    # def calculate_approx_marginals(df):
-    #     """
-    #     Python implementation of the Pv3Rs approx-joint marginalization logic.
-    #     Assumes df contains: patient_id, episode_i, episode_j, post_C, post_L, post_I
-    #     """
-    #     # 1. Identify the unique episodes for this patient (sorted)
-    #     # We assume 'episode' in your sample refers to the current episode (j)
-    #     # and we need to identify the source episode (i). 
-    #     # For this example, let's derive i and j from your structure.
-
-
-    #     def assign_source_episodes(df):
-    #         df = df.sort_values(['patient_id', 'true_episode']).copy()
-            
-    #         # We create a counter that resets for every new 'true_episode'
-    #         # This identifies if the row is comparing against the 1st, 2nd, or 3rd previous episode
-    #         df['pair_source'] = df.groupby(['patient_id', 'true_episode']).cumcount() + 1    
-    #         return df.sort_values('pair_id')
-
-    #     df = assign_source_episodes(df)
-        
-    #     results = []
-
-        
-    #     for pid, group in df.groupby('patient_id'):
-    #         # Get unique episodes in chronological order
-    #         # Based on your data, episodes are 1, 2, 4, 5, 6...
-    #         episodes = sorted(group['true_episode'].unique())
-    #         n_epi = len(episodes)
-            
-    #         # We start calculating from the first recurrence (index 1)
-    #         for idx in range(1, n_epi):
-    #             curr_epi = episodes[idx]
-    #             prev_epi = episodes[idx-1]
-                
-    #             # --- CALCULATE C (Recrudescence) ---
-    #             # Rule: Only look at the immediate predecessor
-    #             c_row = group[(group['true_episode'] == curr_epi) & (group['pair_source'] == prev_epi)]
-    #             # If your data doesn't have 'pair_source', we look for the specific pair 
-    #             # where j = curr_epi and i = prev_epi
-    #             C_prob = c_row['prob_C'].iloc[0] if not c_row.empty else 0.0
-
-    #             # --- CALCULATE L (Relapse) ---
-    #             # Rule: Max( L / (1-C) ) across all previous episodes, then scale by (1-C_total)
-                
-    #             # Get all pairs where 'episode' is our current episode
-    #             all_prev_pairs = group[group['true_episode'] == curr_epi]
-                
-    #             # Calculate the 'relapse share': L / (1 - C)
-    #             # Use small epsilon to avoid division by zero
-    #             shares = all_prev_pairs['prob_L'] / (1 - all_prev_pairs['prob_C'] + 1e-9)
-    #             max_share = shares.max()
-                
-    #             L_prob = max_share * (1 - C_prob)
-                
-    #             # --- CALCULATE I (Reinfection) ---
-    #             # Rule: The remainder
-    #             I_prob = 1 - (C_prob + L_prob)
-                
-    #             results.append({
-    #                 'patient_id': pid,
-    #                 'episode': curr_epi,
-    #                 'C_marg': C_prob,
-    #                 'L_marg': L_prob,
-    #                 'I_marg': I_prob
-    #             })
-    #     marg_result = pd.DataFrame(results)
-
-
-
-
-    #     return marg_result
-
     @staticmethod
     def run_prediction(meta_df,
                        pair_id,
@@ -258,11 +86,11 @@ class PvDeepSet_model:
                        basic_summary=True):
         
         # 1. call a function that load saved model state
-        device, model = PvDeepSet_model.load_model_state()
+        device, model = PvDeepSet_Model.load_model_state()
 
         # 2. get model prediction result 
         # Shape: [N, 3] -> Column 0: C, Column 1: L, Column 2: I
-        predicted_probs = PvDeepSet_model.get_model_results(model=model, dataloader=data_loader, device=device, mode='prediction')
+        predicted_probs = PvDeepSet_Model.get_model_results(model=model, dataloader=data_loader, device=device, mode='prediction')
 
         # 3. Merge IDs with Probabilities
         # Create a DataFrame from the results
@@ -275,18 +103,8 @@ class PvDeepSet_model:
         results_df.insert(0, 'pair_id', pair_id)
 
         results_df = results_df.merge(meta_df, left_on='pair_id', right_on='sample_id_paired', how='inner')
-        unique_result = results_df[['pair_id', 'prior_C', 'prior_L', 'prior_I', 'prob_C', 'prob_L', 'prob_I']].drop_duplicates(ignore_index=True)
-        results_df = PvDeepSet_model.result_post_processing(unique_result, calc_NU_post=True, approx_joint=False)
-        # results_df = PvDeepSet_model.result_post_processing(unique_result, calc_NU_post=False, approx_joint=True)
-
-        return results_df
-
-        # get marginal probabilities
-        marginal_df = PvDeepSet_model.calculate_approx_marginals(results_df[['pair_id', 'patient_id', 'true_episode', 'prob_C', 'prob_L', 'prob_I']])
-        marginal_df['predicted_class'] = marginal_df.apply(classify_row, axis=1, cols=['C_marg', 'L_marg', 'I_marg'])
-        donut_plot = plot_donut_count(marginal_df)
-        marginal_df['patient_id_epi'] = marginal_df['patient_id'] + "_" + marginal_df['episode'].astype(int).astype('str')
-        probability_dist_plot = plot_probability_dist(marginal_df, cols=['patient_id_epi', 'C_marg', 'L_marg','I_marg','predicted_class'])
+        # model result post processing (prior refinement & marginal probabilities calculations)
+        results_df = Post_Model_Computation.result_post_processing(results_df, calc_NU_post=True, approx_joint=True)
 
 
         # 4. Hardclass Classification with Threshold Logic
@@ -305,282 +123,17 @@ class PvDeepSet_model:
         # Apply the logic to create the new column
         results_df['predicted_class'] = results_df.apply(classify_row, axis=1)
 
-
-
-        dist_df = results_df['predicted_class'].value_counts().reset_index()
-        dist_df.columns = ['class', 'count']
-    
-
-        # fig = px.bar(
-        #     dist_df, x='class', y='count', 
-        #     color='class', title="Classification Distribution",
-        #     template="plotly_white"
-        # )
-        def plot_donut_count(df):
-            # 1. Prepare the data
-            # Assuming 'df' is your processed dataframe from the previous step
-            counts_df = df['predicted_class'].value_counts().reset_index()
-            counts_df.columns = ['Class', 'Count']
-            map_rec = {'C':'C (Recrudescence)', 'L': 'L (Relapse)', 'I':'I (Reinfection)'}
-
-            counts_df['Class'] = counts_df['Class'].map(map_rec)
-
-            # 2. Create the Donut Chart
-            fig = px.pie(
-                counts_df, 
-                values='Count', 
-                names='Class', 
-                hole=0.5, # This creates the "donut" effect
-                color='Class',
-                # Keeping colors consistent: Orange (C), Yellow (L), Teal (I)
-                color_discrete_map={
-                    'C (Recrudescence)': '#ff4d00', 
-                    'L (Relapse)': '#e6b400', 
-                    'I (Reinfection)': '#1fb3c4'
-                },
-                template="plotly_white"
-            )
-
-            # 3. Refine the layout to match your previous style
-            fig.update_layout(
-                margin=dict(l=20, r=20, t=60, b=20),
-                height=500,
-                paper_bgcolor='white',
-                # Horizontal legend at the top
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.05,
-                    xanchor="center",
-                    x=0.5,
-                    title=None
-                )
-            )
-
-            # 4. Enhance the traces (labels and percentages)
-            fig.update_traces(
-                textposition='inside', 
-                textinfo='percent+label', # Shows the Class name and %
-                marker=dict(line=dict(color='#FFFFFF', width=2)) # Adds a small white gap between segments
-            )
-
-            return fig
-
-
-        def plot_probability_dist(df, cols=['pair_id', 'prob_C', 'prob_L','prob_I','predicted_class']):
-
-            df = df.copy()
-            df = df[cols].drop_duplicates().reset_index(drop=True)
-
-            # Grouped and sorted blocks
-            df_C = df[df.predicted_class == 'C'].sort_values(cols[1], ascending=False).reset_index(drop=True)
-            df_L = df[df.predicted_class == 'L'].sort_values(cols[2], ascending=False).reset_index(drop=True)
-            df_I = df[df.predicted_class == 'I'].sort_values(cols[3], ascending=False).reset_index(drop=True)
-
-            df_sorted = pd.concat([df_C, df_L, df_I], ignore_index=True)
-
-            df_long = df_sorted.melt(
-                id_vars=cols[0], 
-                value_vars=cols[1:4],
-                var_name='Probability_Type', 
-                value_name='Probability'
-            )
-            
-            fig = px.bar(
-                df_long, 
-                x=cols[0], 
-                y="Probability", 
-                color="Probability_Type",
-                color_discrete_sequence=['#ff4d00', '#e6b400', '#1fb3c4'],
-                category_orders={cols[0]: df_sorted[cols[0]].tolist()},
-                template="plotly_white" # Sets white background and clean gridlines
-            )
-
-            fig.update_layout(
-                title=None,
-                margin=dict(l=50, r=20, t=60, b=50), # Adjusted for axis labels
-                height=500,
-                paper_bgcolor='white',
-                plot_bgcolor='white',
-                
-                # Horizontal legend at the top
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="center",
-                    x=0.5,
-                    title=None
-                ),
-                
-                xaxis=dict(
-                    title="Samples",      # Restored the label
-                    showticklabels=False, # Keeps specific IDs hidden for cleanliness
-                    ticks="",
-                    linecolor='black',    # Adds a crisp base line
-                    showgrid=False
-                ),
-                
-                yaxis=dict(
-                    title="Probability",
-                    range=[0, 1],
-                    tickformat=".1f",
-                    linecolor='black',
-                    gridcolor='lightgrey' # Subtle grid for probability reference
-                ),
-                
-                bargap=0
-            )
-
-            return fig
+        # ploting the recurrence classification results 
+        donut_plot = PvRecNet_Plots.plot_donut_count(results_df)
+        probability_dist_plot = PvRecNet_Plots.plot_probability_dist(results_df)       
         
-        donut_plot = plot_donut_count(results_df)
-        probability_dist_plot = plot_probability_dist(results_df)       
-        
-        # results_df = results_df.merge(meta_df, left_on='pair_id', right_on='sample_id_paired', how='inner')
-
-        # # get marginal probabilities
-        # marginal_df = PvDeepSet_model.calculate_approx_marginals(results_df[['pair_id', 'patient_id', 'true_episode', 'prob_C', 'prob_L', 'prob_I']])
-        # marginal_df['predicted_class'] = marginal_df.apply(classify_row, axis=1, cols=['C_marg', 'L_marg', 'I_marg'])
-        # donut_plot = plot_donut_count(marginal_df)
-        # marginal_df['patient_id_epi'] = marginal_df['patient_id'] + "_" + marginal_df['episode'].astype(int).astype('str')
-        # probability_dist_plot = plot_probability_dist(marginal_df, cols=['patient_id_epi', 'C_marg', 'L_marg','I_marg','predicted_class'])
 
         columns = ['pair_id', 'patient_id', 'true_episode', 'prob_C', 'prob_L', 'prob_I', 'predicted_class']
         results = {
-                'results_table':marginal_df,
+                'results_table':results_df,
                 'donut_plot': donut_plot,
                 'distribution_plot': probability_dist_plot
                 }
 
         return results
-    @staticmethod
-    def run_evaluation(meta_df,
-                        pair_id,
-                        data_loader, 
-                        probability_plot = True, 
-                        metrics=True, 
-                        confusion_matrix=True, 
-                        basic_summary=True):
-            
-            # 1. Load model state
-            device, model = PvDeepSet_model.load_model_state()
-
-            # 2. Get probabilities
-            actual_probs, predicted_probs = PvDeepSet_model.get_model_results(
-                model=model, dataloader=data_loader, device=device, mode='evaluation'
-            )
-
-            class_names = ['C', 'L', 'I']
-
-            # --- 3. CREATE CONSOLIDATED RESULTS TABLE ---
-            eval_df = pd.DataFrame({
-                'pair_id': pair_id,
-                'true_C': actual_probs[:, 0],
-                'true_L': actual_probs[:, 1],
-                'true_I': actual_probs[:, 2],
-                'pred_C': predicted_probs[:, 0],
-                'pred_L': predicted_probs[:, 1],
-                'pred_I': predicted_probs[:, 2]
-            })
-
-            eval_df['true_class'] = [class_names[i] for i in np.argmax(actual_probs, axis=1)]
-
-            def classify_with_threshold(row):
-                probs = [row['pred_C'], row['pred_L'], row['pred_I']]
-                max_p = max(probs)
-                if max_p < 0.5:
-                    return "undefined"
-                return class_names[np.argmax(probs)]
-
-            eval_df['predicted_class'] = eval_df.apply(classify_with_threshold, axis=1)
-
-            # --- 4. PREPARE DATA FOR PLOTS ---
-            name_to_idx = {name: i for i, name in enumerate(class_names)}
-            y_true_hard = np.array([name_to_idx[c] for c in eval_df['true_class']])
-            y_pred_hard = np.array([name_to_idx.get(c, -1) for c in eval_df['predicted_class']])
-
-            mask = y_pred_hard != -1
-            y_true_filtered = y_true_hard[mask]
-            y_pred_filtered = y_pred_hard[mask]
-                
-            # --- INNER FUNCTION 1: PROBABILITY REGRESSION ---
-            def get_basic_summary(eval_df):
-                return f"\n--- Prediction Summary --- {eval_df['predicted_class'].value_counts()} --------------------------\n"
-            
-            # --- INNER FUNCTION 2: PROBABILITY REGRESSION ---
-            def get_prob_plot(y_true, y_prob, names):
-                fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
-                for i, ax in enumerate(axes):
-                    actual, predicted = y_true[:, i], y_prob[:, i]
-                    jitter = np.random.normal(0, 0.008, size=actual.shape)
-                    sns.regplot(x=actual + jitter, y=predicted, ax=ax, 
-                                scatter_kws={'alpha': 0.3, 's': 8, 'color': "#1672cf"}, 
-                                line_kws={'color': '#e74c3c', 'linewidth': 2.5})
-                    
-                    ax.set_title(f"{names[i]}\n$R^2 = {r2_score(actual, predicted):.3f}$", pad=20, fontsize=15)
-                    ax.set_xlim(-0.05, 1.05); ax.set_ylim(-0.05, 1.05)
-                plt.tight_layout()
-                plt.close(fig)
-                return fig
-
-            # --- INNER FUNCTION 3: METRICS BAR & TABLE ---
-            def get_metrics_plot(y_true, y_pred, names):
-                report = classification_report(y_true, y_pred, target_names=names, output_dict=True)
-                df = pd.DataFrame(report).transpose()
-                
-                fig = plt.figure(figsize=(8, 8))
-                gs = fig.add_gridspec(2, 1, height_ratios=[1, 0.5], hspace=0.3)
-                ax_bar = fig.add_subplot(gs[0])
-                ax_tbl = fig.add_subplot(gs[1])
-
-                # Bar Chart
-                df.loc[names, ['precision', 'recall', 'f1-score']].plot(kind='bar', ax=ax_bar, color=['#1672cf', '#4da1ff', '#aecff2'])
-                ax_bar.set_title("Performance Metrics", fontsize=15, weight='bold')
-                ax_bar.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=3)
-
-                # Table
-                ax_tbl.axis('off')
-                the_table = ax_tbl.table(cellText=df.round(3).values, rowLabels=df.index, 
-                                        colLabels=df.columns, loc='center', cellLoc='center')
-                the_table.scale(1, 1.5)
-                
-                plt.close(fig)
-                return fig
-
-            # --- INNER FUNCTION 4: CONFUSION MATRIX ---
-            def get_conf_matrix_plot(y_true, y_pred, names):
-                cm = confusion_matrix(y_true, y_pred)
-                cm_perc = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-                annot_labels = (np.array([f"{c}\n({p:.1%})" for c, p in zip(cm.flatten(), cm_perc.flatten())])).reshape(3, 3)
-                
-                fig, ax = plt.subplots(figsize=(7, 6))
-                sns.heatmap(cm_perc, annot=annot_labels, fmt="", cmap="Blues", ax=ax,
-                            xticklabels=names, yticklabels=names, annot_kws={"size": 12, "weight": "bold"})
-                ax.set_title("Confusion Matrix", pad=20, fontsize=15, weight='bold')
-                ax.set_xlabel('Predicted'); ax.set_ylabel('True')
-                
-                plt.close(fig)
-                return fig
-            
-            results_df = eval_df.merge(meta_df, left_on='pair_id', right_on='sample_id_paired', how='inner')
-
-            # 5. Execute and Collect Plots
-            results = {
-                "results_table": results_df,
-                "data": (actual_probs, predicted_probs, y_true_hard, y_pred_hard)
-            }
-
-            if basic_summary:
-                results['basic_summary'] = get_basic_summary(eval_df)
-            if probability_plot:
-                results['prob_plot'] = get_prob_plot(actual_probs, predicted_probs, class_names)
-            
-            if metrics:
-                results['metrics_plot'] = get_metrics_plot(y_true_filtered, y_pred_filtered, class_names)
-                
-            if confusion_matrix:
-                results['conf_plot'] = get_conf_matrix_plot(y_true_filtered, y_pred_filtered, class_names)
-
-            return results
-
+   
