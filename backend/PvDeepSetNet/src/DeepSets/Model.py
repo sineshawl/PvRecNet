@@ -5,6 +5,13 @@ import torch.nn.functional as F
 # =====================================================
 # Deep Sets model for Pv3Rs surrogate
 # =====================================================
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# =====================================================
+# Deep Sets model for Pv3Rs surrogate
+# =====================================================
 class PvDeepSets(nn.Module):
     def __init__(self,
                  n_alleles,        # total number of unique alleles
@@ -40,19 +47,18 @@ class PvDeepSets(nn.Module):
         # 3️⃣ Pair-level MLP (aggregate markers + priors + MOI)
         # -------------------------------------------------
         self.pair_mlp = nn.Sequential(
-            nn.Linear(marker_embed_dim + 3 + 2, pair_embed_dim),  # +3 priors +2 MOI
+            nn.Linear(marker_embed_dim + 2, pair_embed_dim),  #  +2 MOI
             nn.ReLU(),
             nn.Linear(pair_embed_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, n_classes)
         )
 
-    def forward(self, X_alleles, allele_mask, marker_mask, priors, MOI):
+    def forward(self, X_alleles, allele_mask, marker_mask, MOI):
         """
         X_alleles : (batch, M_max, 2, A_max, 2)
         allele_mask: same shape as X_alleles[:,:,:,:,0]
         marker_mask: (batch, M_max)
-        priors     : (batch, 3)
         MOI        : (batch, 2)
         """
         B, M, E, A, _ = X_alleles.shape
@@ -94,7 +100,7 @@ class PvDeepSets(nn.Module):
         # ---------------------------------------------
         # 4️⃣ Concatenate priors + MOI
         # ---------------------------------------------
-        pair_emb = torch.cat([pair_emb, priors, MOI], dim=-1)  # (B, marker_dim+4)
+        pair_emb = torch.cat([pair_emb, MOI], dim=-1)  # (B, marker_dim+4)
 
         # ---------------------------------------------
         # 5️⃣ Pair-level MLP → logits
@@ -103,4 +109,5 @@ class PvDeepSets(nn.Module):
         probs = F.softmax(logits, dim=-1)
 
         return probs
+
 
