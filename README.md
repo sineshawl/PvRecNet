@@ -1,4 +1,4 @@
-# PvRecNet: Deep Learning Malaria Recurrence Classification Platform
+# PvRecNet: Deep Learning based *Plasmodium vivax* Recurrence Classification Platform
 
 [![Status](https://img.shields.io/badge/status-operational-2dd4bf?style=flat-square)](#)
 [![Python](https://img.shields.io/badge/python-3.10+-1e293b?style=flat-square&logo=python)](#)
